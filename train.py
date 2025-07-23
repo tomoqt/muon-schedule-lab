@@ -192,7 +192,7 @@ config = {k: globals()[k] for k in config_keys} # will be useful for logging
 # -----------------------------------------------------------------------------
 
 # Import appropriate model based on configuration
-from model_baseline import GPTConfig, GPT
+from model import GPTConfig, GPT
 
 # various inits, derived attributes, I/O setup
 ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
