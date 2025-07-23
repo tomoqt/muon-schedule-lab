@@ -160,7 +160,6 @@ n_head = 12
 n_embd = 768
 dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
 bias = False # do we use bias inside LayerNorm and Linear layers?
-use_baseline_model = False # whether to use the baseline model from model_baseline.py
 # adamw optimizer
 learning_rate = 6e-4 # max learning rate
 max_iters = 600000 # total number of training iterations
@@ -189,19 +188,11 @@ compile = True # use PyTorch 2.0 to compile the model to be faster
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
 exec(open('configurator.py').read()) # overrides from command line or config file
 
-# Set output directory based on model type
-out_dir = 'out_baseline' if use_baseline_model else 'out_hyperbolic'
-
 config = {k: globals()[k] for k in config_keys} # will be useful for logging
 # -----------------------------------------------------------------------------
 
 # Import appropriate model based on configuration
-if use_baseline_model:
-    print("Using baseline model from model_baseline.py")
-    from model_baseline import GPTConfig, GPT
-else:
-    print("Using standard model from model.py")
-    from model import GPTConfig, GPT
+from model_baseline import GPTConfig, GPT
 
 # various inits, derived attributes, I/O setup
 ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
@@ -485,100 +476,6 @@ while True:
                 "mfu": running_mfu*100, # convert to percentage
             }
             
-            # Log curvature values to wandb
-            if hasattr(raw_model.config, 'dynamic_curvature') and raw_model.config.dynamic_curvature:
-                all_dynamic_curvature_block_means = []
-                log_dict['curvature_type'] = 'dynamic'
-
-                for i, block in enumerate(raw_model.transformer.h):
-                    if hasattr(block, 'last_dynamic_c'):
-                        # dynamic_c_tensor has shape (B, n_head) or (B, 1)
-                        # B is batch_size used in estimate_loss, which is the main script's batch_size
-                        dynamic_c_tensor = block.last_dynamic_c 
-                        
-                        # Calculate mean over the batch dimension. Result shape: (n_head,) or (1,)
-                        mean_batch_dynamic_c = dynamic_c_tensor.mean(dim=0).cpu()
-                        
-                        current_block_means = []
-                        if mean_batch_dynamic_c.numel() == raw_model.config.n_head and raw_model.config.per_head_curvature:
-                            # Per-head dynamic curvature prediction
-                            for h_idx in range(raw_model.config.n_head):
-                                head_mean_c = mean_batch_dynamic_c[h_idx].item()
-                                log_dict[f'dynamic_curvature/block_{i}/head_{h_idx}_batch_mean'] = head_mean_c
-                                current_block_means.append(head_mean_c)
-                            block_overall_mean = sum(current_block_means) / len(current_block_means) if current_block_means else 0.0
-                            log_dict[f'dynamic_curvature/block_{i}_overall_batch_mean'] = block_overall_mean
-                            all_dynamic_curvature_block_means.append(block_overall_mean)
-                        elif mean_batch_dynamic_c.numel() == 1:
-                            # Scalar dynamic curvature prediction
-                            scalar_mean_c = mean_batch_dynamic_c.item()
-                            log_dict[f'dynamic_curvature/block_{i}_batch_mean'] = scalar_mean_c
-                            all_dynamic_curvature_block_means.append(scalar_mean_c)
-                        else:
-                            print(f"Warning: Unexpected shape for mean_batch_dynamic_c in block {i}: {mean_batch_dynamic_c.shape}")
-                
-                if all_dynamic_curvature_block_means:
-                    log_dict['dynamic_curvature/global_avg_block_means'] = sum(all_dynamic_curvature_block_means) / len(all_dynamic_curvature_block_means)
-                    log_dict['dynamic_curvature/global_min_block_means'] = min(all_dynamic_curvature_block_means)
-                    log_dict['dynamic_curvature/global_max_block_means'] = max(all_dynamic_curvature_block_means)
-                
-                # It's good practice to remove the stored tensors after use if they are not needed elsewhere before the next eval
-                # to ensure fresh values and free memory, though detach() helps with graph issues.
-                # However, estimate_loss runs multiple times, so this must be done carefully or not at all if it interferes.
-                # For now, let's assume they get overwritten or cleared correctly by the model logic.
-
-            # Log static/base curvatures if dynamic curvature is NOT active
-            elif hasattr(raw_model.config, 'curvature_mode') and raw_model.config.curvature_mode in ['parametric', 'random','tied']:
-                log_dict['curvature_type'] = 'static'
-                all_static_curvature_values = []
-                for i, block in enumerate(raw_model.transformer.h):
-                    if hasattr(block, 'c') and isinstance(block.c, nn.Parameter):
-                        # Check if using per-head curvature
-                        if block.c.dim() > 0 and block.c.numel() > 1:
-                            # Log per-head curvature values
-                            if block.c.numel() == raw_model.config.n_head:
-                                # Original per-head version (one value per head)
-                                for h, c_val in enumerate(block.c.detach().cpu()):
-                                    log_dict[f'curvature/block_{i}/head_{h}'] = c_val.item()
-                                    all_static_curvature_values.append(c_val.item())
-                                # Also log block average
-                                block_avg = block.c.detach().mean().cpu().item()
-                                log_dict[f'curvature/block_{i}'] = block_avg
-                            else:
-                                # Expanded version where each head's value is repeated
-                                # Sample just the first value for each head to avoid too many logs
-                                head_size = raw_model.config.n_embd // raw_model.config.n_head
-                                for h in range(raw_model.config.n_head):
-                                    head_val = block.c.detach().cpu()[h * head_size].item()
-                                    log_dict[f'curvature/block_{i}/head_{h}'] = head_val
-                                    all_static_curvature_values.append(head_val)
-                                # Also log block average
-                                block_avg = block.c.detach().mean().cpu().item()
-                                log_dict[f'curvature/block_{i}'] = block_avg
-                        else:
-                            # Original single curvature per block
-                            c_value = block.c.detach().cpu().item()
-                            log_dict[f'curvature/block_{i}'] = c_value
-                            all_static_curvature_values.append(c_value)
-                
-                # Add curvature statistics
-                if all_static_curvature_values:
-                    log_dict['curvature/avg'] = sum(all_static_curvature_values) / len(all_static_curvature_values)
-                    log_dict['curvature/min'] = min(all_static_curvature_values)
-                    log_dict['curvature/max'] = max(all_static_curvature_values)
-                    
-                    # Add a flag to indicate per-head curvature is being used for static
-                    log_dict['curvature/static_per_head_active'] = hasattr(raw_model.config, 'per_head_curvature') and raw_model.config.per_head_curvature
-                
-                # Add embedding curvature if it exists (this is always static if present)
-                if hasattr(raw_model, 'embedding_curvature') and isinstance(raw_model.embedding_curvature, nn.Parameter):
-                    embedding_curvature = raw_model.embedding_curvature.detach().cpu().item()
-                    log_dict['curvature/embedding'] = embedding_curvature
-                    all_static_curvature_values.append(embedding_curvature)
-                    # Update statistics to include embedding curvature
-                    log_dict['curvature/avg'] = sum(all_static_curvature_values) / len(all_static_curvature_values)
-                    log_dict['curvature/min'] = min(all_static_curvature_values)
-                    log_dict['curvature/max'] = max(all_static_curvature_values)
             
             wandb.log(log_dict)
         if losses['val'] < best_val_loss or always_save_checkpoint:
@@ -593,8 +490,7 @@ while True:
                     'best_val_loss': best_val_loss,
                     'config': config,
                 }
-                model_type = "baseline" if use_baseline_model else "hyperbolic"
-                print(f"saving {model_type} model checkpoint to {out_dir}")
+                print(f"saving checkpoint to {out_dir}")
                 torch.save(checkpoint, os.path.join(out_dir, 'ckpt.pt'))
     if iter_num == 0 and eval_only:
         break
