@@ -39,6 +39,3 @@ min_lr = 1e-5
 beta2 = 0.99 
 
 warmup_iters = 100 # not super necessary potentially
-use_embedding_curvature = True
-use_baseline_model = False
-dynamic_curvature = True
