@@ -1,7 +1,7 @@
 # train a miniature character-level shakespeare model
 # good for debugging and playing on macbooks and such
 
-out_dir = 'Hyperbolic-out-shakespeare-char'
+out_dir = 'out-shakespeare-char'
 eval_interval = 10 # keep frequent because we'll overfit
 eval_iters = 20
 log_interval = 1 # don't print too too often
@@ -10,14 +10,14 @@ log_interval = 1 # don't print too too often
 always_save_checkpoint = False
 
 wandb_log = True # override via command line if you like
-wandb_project = 'hyperbolic-shakespeare-char'
+wandb_project = 'shakespeare-char'
 wandb_run_name = 'mini-gpt'
 
 dataset = 'shakespeare_char'
 gradient_accumulation_steps = 1
-batch_size = 64
+batch_size = 10
 block_size = 256 # context of up to 256 previous characters
-curvature = 1.0
+curvature = 1.
 # baby GPT model :)
 n_layer = 6
 n_head = 6

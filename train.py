@@ -325,7 +325,8 @@ while True:
     # determine and set the learning rate for this iteration
     lr = get_lr(iter_num) if decay_lr else learning_rate
     for param_group in optimizer.param_groups:
-        if param_group['use_muon']:
+        # Standard AdamW param groups won't have this key; treat as "not Muon".
+        if param_group.get('use_muon', False):
             # For Muon, scale the learning rate appropriately
             param_group['lr'] = lr * (muon_lr / learning_rate)
         else:
