@@ -142,11 +142,53 @@ uv run --with-requirements requirements.txt \
   --name-prefix long500
 ```
 
-## Findings on shakespeare_char (current)
-All numbers below are from a 2000-step sweep with:
-`config/train_shakespeare_char.py`, `n_layer=2`, `n_head=2`, `n_embd=64`, seed `1337`.
-Each method was run at LR scale `{0.5, 1.0, 1.5, 2.0}` where `learning_rate`, `muon_lr`,
-and `min_lr` were scaled together.
+## Findings on shakespeare_char
+Unless noted otherwise, all values are from 2000-step runs with
+`config/train_shakespeare_char.py`, `n_layer=2`, `n_head=2`, `n_embd=64`.
+The reference baseline run is:
+- `long2000_baseline_muon`: `val=1.9162`, `train=1.7794`
+
+### Fixed-alpha sweeps
+Coarse sweep over `alpha in {-0.5, 0, 0.25, 0.5, 0.75, 1.0}`:
+- Best was `alpha=0.5` (`p=0`), `val=1.9861`
+- Moving far from `alpha=0.5` quickly degrades quality
+
+Refinement below `0.5` (`alpha in {0.49, 0.48, 0.45, 0.40, 0.35, 0.30}`):
+- Best was `alpha=0.49` (`p=0.02`), `val=2.0036`
+- This stayed worse than the `alpha=0.5` run (`1.9861`)
+
+![Fixed alpha refine](assets/alpha_refine_below_05.png)
+
+### Entropy hysteresis sweeps
+Initial hysteresis sweeps showed wide `p_high` ranges were unstable and high-loss.
+Follow-up runs with tighter amplitude found:
+- Best: `p_low=0.0`, `p_high=0.04`, thresholds `0.695/0.715`, `val=2.0063`
+- Increasing `p_high` above `0.04` worsened validation in this setting
+
+![Entropy hyst config](assets/entropy_hyst_config_sweep.png)
+![Entropy hyst followup](assets/entropy_hyst_followup_p_high_sweep.png)
+
+### Entropy-law sweeps
+Across linear / power / sigmoid laws with `p in [0, 0.12]`, best run was:
+- `power` law with `gamma=2`: `val=1.9990`
+
+Coarser wide-range sweeps confirmed:
+- Very large `p_high` values (for example `0.5`) and some inverse mappings hurt quality
+
+![Entropy law sweep](assets/entropy_law_sweep.png)
+![Entropy law coarse](assets/entropy_law_coarse_wide_sweep.png)
+
+### Repeatability check (3 seeds)
+Mean and std over seeds `{1337,1338,1339}`:
+
+| method | mean val | std |
+|---|---:|---:|
+| fixed_alpha05 | **1.9645** | 0.0154 |
+| hyst_p004 | 1.9810 | 0.0203 |
+| law_powerg2 | 1.9844 | 0.0200 |
+| law_powerg2_osc | 1.9975 | 0.0114 |
+
+![Repeat seeds](assets/repeat_seed_oscillation_comparison.png)
 
 ### Exact backend (`power_backend=exact`)
 | method | LRx0.5 | LRx1.0 | LRx1.5 | LRx2.0 | best |
@@ -172,6 +214,7 @@ and `min_lr` were scaled together.
 Baseline Muon is still best across all LR scales in this setup.
 Poly backend is faster than exact for scheduled runs, but currently loses validation quality
 relative to exact by roughly `+0.06` to `+0.08` val loss on average across the tested methods.
+Across the full set of char experiments, none of the scheduled variants beat baseline Muon on final validation.
 
 ## Notes
 - Power schedule runs default to polynomial updates unless you set `power_backend=exact`.
