@@ -74,7 +74,7 @@ muon_nesterov = True # whether to use nesterov momentum in Muon
 muon_ns_steps = 5 # number of Newton-Schulz iteration steps
 # scheduled power-update controls (for Muon param groups)
 enable_power_schedules = False
-power_schedule_type = 'anneal' # constant | anneal | anneal_cosine | fixed_alternating | entropy_alternating
+power_schedule_type = 'anneal' # constant | anneal | anneal_cosine | fixed_alternating | entropy_alternating | entropy_law
 power_p_start = 1.0
 power_p_end = 0.0
 power_p_low = 0.0
@@ -83,8 +83,20 @@ power_alternation_period = 200
 power_entropy_low = 0.45
 power_entropy_high = 0.65
 power_entropy_initial_mode = 'low' # low | high
+power_entropy_law = 'linear' # linear | power | sigmoid
+power_entropy_gamma = 1.0
+power_entropy_sigmoid_temp = 8.0
+power_entropy_linear_coeff = 1.0
+power_entropy_osc_amp = 0.0
+power_entropy_osc_period = 0
+power_entropy_ema_beta = 0.0
 power_entropy_max_matrices = 8
 power_svd_eps = 1e-8
+power_backend = 'poly' # poly | exact
+power_poly_degree = 5
+power_poly_eps = 1e-3
+power_poly_points = 512
+power_poly_round = 1e-3
 power_log_interval = 100
 # learning rate decay settings
 decay_lr = True # whether to decay the learning rate
@@ -97,6 +109,7 @@ backend = 'nccl' # 'nccl', 'gloo', etc.
 device = 'cuda' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
 dtype = 'float16'#'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16' # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
 compile = True # use PyTorch 2.0 to compile the model to be faster
+seed = 1337
 # -----------------------------------------------------------------------------
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
 exec(open('configurator.py').read()) # overrides from command line or config file
@@ -133,7 +146,7 @@ print(f"tokens per iteration will be: {tokens_per_iter:,}")
 if master_process:
     os.makedirs(out_dir, exist_ok=True)
     print(f"Checkpoint directory: {out_dir}")
-torch.manual_seed(1337 + seed_offset)
+torch.manual_seed(seed + seed_offset)
 torch.backends.cuda.matmul.allow_tf32 = True # allow tf32 on matmul
 torch.backends.cudnn.allow_tf32 = True # allow tf32 on cudnn
 device_type = 'cuda' if 'cuda' in device else 'cpu' # for later use in torch.autocast
@@ -267,6 +280,11 @@ else:
             'use_power': enable_power_schedules,
             'power_p': power_p_start,
             'svd_eps': power_svd_eps,
+            'power_backend': power_backend,
+            'power_poly_degree': power_poly_degree,
+            'power_poly_eps': power_poly_eps,
+            'power_poly_points': power_poly_points,
+            'power_poly_round': power_poly_round,
         },
         {
             'params': non_matrix_params,
@@ -299,12 +317,22 @@ if use_muon and enable_power_schedules:
         entropy_low=power_entropy_low,
         entropy_high=power_entropy_high,
         entropy_initial_mode=power_entropy_initial_mode,
+        entropy_law=power_entropy_law,
+        entropy_gamma=power_entropy_gamma,
+        entropy_sigmoid_temp=power_entropy_sigmoid_temp,
+        entropy_linear_coeff=power_entropy_linear_coeff,
+        entropy_osc_amp=power_entropy_osc_amp,
+        entropy_osc_period=power_entropy_osc_period,
+        entropy_ema_beta=power_entropy_ema_beta,
     )
     if master_process:
         print(
             "Power schedules enabled: "
             f"type={power_schedule_type}, p_start={power_p_start}, p_end={power_p_end}, "
-            f"p_low={power_p_low}, p_high={power_p_high}"
+            f"p_low={power_p_low}, p_high={power_p_high}, "
+            f"entropy_law={power_entropy_law}, osc_amp={power_entropy_osc_amp}, "
+            f"osc_period={power_entropy_osc_period}, backend={power_backend}, "
+            f"poly_degree={power_poly_degree}"
         )
 
 if init_from == 'resume':
@@ -435,7 +463,7 @@ while True:
     # optional scheduled power transform on Muon parameter groups
     if use_muon and enable_power_schedules and power_schedule is not None:
         entropy_value = None
-        if power_schedule_type == 'entropy_alternating':
+        if power_schedule_type in {'entropy_alternating', 'entropy_law'}:
             entropy_value = mean_grad_svd_entropy(matrix_params, max_matrices=power_entropy_max_matrices)
         current_p = power_schedule.value(iter_num, entropy_value)
         for param_group in optimizer.param_groups:
@@ -443,6 +471,11 @@ while True:
                 param_group['use_power'] = True
                 param_group['power_p'] = current_p
                 param_group['svd_eps'] = power_svd_eps
+                param_group['power_backend'] = power_backend
+                param_group['power_poly_degree'] = power_poly_degree
+                param_group['power_poly_eps'] = power_poly_eps
+                param_group['power_poly_points'] = power_poly_points
+                param_group['power_poly_round'] = power_poly_round
         last_power_p = current_p
         last_power_entropy = entropy_value
     # step the optimizer and scaler if training in fp16

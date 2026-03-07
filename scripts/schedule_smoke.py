@@ -52,6 +52,7 @@ def make_optimizer(model: nn.Module) -> tuple[SingleDeviceMuonWithAuxAdam, list[
             "use_power": True,
             "power_p": 1.0,
             "svd_eps": 1e-8,
+            "power_backend": "poly",
         },
         {
             "params": non_matrix_params,
@@ -82,6 +83,13 @@ def run_schedule(name: str, schedule_type: str, steps: int = 30) -> None:
         entropy_low=0.45,
         entropy_high=0.65,
         entropy_initial_mode="low",
+        entropy_law="linear",
+        entropy_gamma=1.0,
+        entropy_sigmoid_temp=8.0,
+        entropy_linear_coeff=1.0,
+        entropy_osc_amp=0.0,
+        entropy_osc_period=0,
+        entropy_ema_beta=0.0,
     )
 
     print(f"\n=== {name} ({schedule_type}) ===")
@@ -96,7 +104,7 @@ def run_schedule(name: str, schedule_type: str, steps: int = 30) -> None:
         loss.backward()
 
         entropy = None
-        if schedule_type == "entropy_alternating":
+        if schedule_type in {"entropy_alternating", "entropy_law"}:
             entropy = mean_grad_svd_entropy(matrix_params, max_matrices=8)
         p_val = schedule.value(step, entropy)
 
@@ -116,6 +124,7 @@ def main() -> None:
     run_schedule("Annealing", "anneal")
     run_schedule("Fixed alternating", "fixed_alternating")
     run_schedule("Entropy alternating", "entropy_alternating")
+    run_schedule("Entropy law", "entropy_law")
 
 
 if __name__ == "__main__":

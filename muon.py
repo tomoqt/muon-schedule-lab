@@ -1,5 +1,6 @@
 import torch
 import torch.distributed as dist
+import numpy as np
 
 
 def zeropower_via_newtonschulz5(G, steps: int):
@@ -41,7 +42,69 @@ def muon_update(grad, momentum, beta=0.95, ns_steps=5, nesterov=True):
     return update
 
 
-def power_svd_update(grad, momentum, p=0.0, beta=0.95, nesterov=True, svd_eps=1e-8):
+_POLY_COEFF_CACHE = {}
+
+
+def _poly_coeff_key(alpha, degree, eps, n_points, round_step):
+    if round_step > 0:
+        alpha = round(float(alpha) / round_step) * round_step
+    return (float(alpha), int(degree), float(eps), int(n_points))
+
+
+def _build_poly_coeffs(alpha, degree=5, eps=1e-3, n_points=512):
+    xs = np.linspace(eps, 1.0, int(n_points), dtype=np.float64)
+    ys = xs ** (-float(alpha))
+    coeffs = np.polyfit(xs, ys, int(degree)).astype(np.float32)
+    return torch.from_numpy(coeffs)
+
+
+def _poly_matrix(a, coeffs):
+    n = a.shape[0]
+    identity = torch.eye(n, device=a.device, dtype=a.dtype)
+    p = torch.zeros_like(a)
+    for c in coeffs.to(device=a.device, dtype=a.dtype):
+        p = p @ a + c * identity
+    return p
+
+
+def _power_poly_update(update, p=0.0, poly_degree=5, poly_eps=1e-3, poly_points=512, poly_round=1e-3):
+    # p maps to alpha via exponent identity: p = 1 - 2*alpha.
+    alpha = 0.5 * (1.0 - float(p))
+    a = update.float().mT @ update.float()
+    scale = a.norm()
+    if scale.item() <= 1e-12:
+        return torch.zeros_like(update)
+    a_tilde = a / (scale + 1e-7)
+
+    key = _poly_coeff_key(alpha, poly_degree, poly_eps, poly_points, poly_round)
+    coeffs = _POLY_COEFF_CACHE.get(key)
+    if coeffs is None:
+        coeffs = _build_poly_coeffs(
+            alpha=key[0],
+            degree=poly_degree,
+            eps=poly_eps,
+            n_points=poly_points,
+        )
+        _POLY_COEFF_CACHE[key] = coeffs
+
+    poly = _poly_matrix(a_tilde, coeffs)
+    transformed = (scale ** (-alpha)) * (update.float() @ poly)
+    return transformed.to(update.dtype)
+
+
+def power_svd_update(
+    grad,
+    momentum,
+    p=0.0,
+    beta=0.95,
+    nesterov=True,
+    svd_eps=1e-8,
+    power_backend="poly",
+    power_poly_degree=5,
+    power_poly_eps=1e-3,
+    power_poly_points=512,
+    power_poly_round=1e-3,
+):
     """Scheduled singular-value-power update transform."""
     momentum.lerp_(grad, 1 - beta)
     update = grad.lerp_(momentum, beta) if nesterov else momentum
@@ -50,11 +113,23 @@ def power_svd_update(grad, momentum, p=0.0, beta=0.95, nesterov=True, svd_eps=1e
     if update.ndim != 2:
         return update
 
-    U, S, Vh = torch.linalg.svd(update.float(), full_matrices=False)
-    if p < 0:
-        S = S.clamp_min(svd_eps)
-    S_new = S ** p
-    return ((U * S_new.unsqueeze(0)) @ Vh).to(update.dtype)
+    backend = str(power_backend).lower()
+    if backend == "poly":
+        return _power_poly_update(
+            update=update,
+            p=p,
+            poly_degree=power_poly_degree,
+            poly_eps=power_poly_eps,
+            poly_points=power_poly_points,
+            poly_round=power_poly_round,
+        )
+    if backend == "exact":
+        U, S, Vh = torch.linalg.svd(update.float(), full_matrices=False)
+        if p < 0:
+            S = S.clamp_min(svd_eps)
+        S_new = S ** p
+        return ((U * S_new.unsqueeze(0)) @ Vh).to(update.dtype)
+    raise ValueError(f"Unknown power backend '{power_backend}'. Expected 'poly' or 'exact'.")
 
 
 class Muon(torch.optim.Optimizer):
@@ -112,6 +187,11 @@ class Muon(torch.optim.Optimizer):
                             beta=group["momentum"],
                             nesterov=group["nesterov"],
                             svd_eps=group.get("svd_eps", 1e-8),
+                            power_backend=group.get("power_backend", "poly"),
+                            power_poly_degree=group.get("power_poly_degree", 5),
+                            power_poly_eps=group.get("power_poly_eps", 1e-3),
+                            power_poly_points=group.get("power_poly_points", 512),
+                            power_poly_round=group.get("power_poly_round", 1e-3),
                         )
                     else:
                         update = muon_update(
@@ -160,6 +240,11 @@ class SingleDeviceMuon(torch.optim.Optimizer):
                         beta=group["momentum"],
                         nesterov=group["nesterov"],
                         svd_eps=group.get("svd_eps", 1e-8),
+                        power_backend=group.get("power_backend", "poly"),
+                        power_poly_degree=group.get("power_poly_degree", 5),
+                        power_poly_eps=group.get("power_poly_eps", 1e-3),
+                        power_poly_points=group.get("power_poly_points", 512),
+                        power_poly_round=group.get("power_poly_round", 1e-3),
                     )
                 else:
                     update = muon_update(
@@ -224,9 +309,16 @@ class MuonWithAuxAdam(torch.optim.Optimizer):
                 group["use_power"] = group.get("use_power", False)
                 group["power_p"] = group.get("power_p", 0.0)
                 group["svd_eps"] = group.get("svd_eps", 1e-8)
+                group["power_backend"] = group.get("power_backend", "poly")
+                group["power_poly_degree"] = group.get("power_poly_degree", 5)
+                group["power_poly_eps"] = group.get("power_poly_eps", 1e-3)
+                group["power_poly_points"] = group.get("power_poly_points", 512)
+                group["power_poly_round"] = group.get("power_poly_round", 1e-3)
                 allowed = {
                     "params", "lr", "momentum", "weight_decay", "use_muon",
-                    "nesterov", "ns_steps", "use_power", "power_p", "svd_eps"
+                    "nesterov", "ns_steps", "use_power", "power_p", "svd_eps",
+                    "power_backend", "power_poly_degree", "power_poly_eps",
+                    "power_poly_points", "power_poly_round",
                 }
                 assert set(group.keys()).issubset(allowed)
             else:
@@ -268,6 +360,11 @@ class MuonWithAuxAdam(torch.optim.Optimizer):
                                 beta=group["momentum"],
                                 nesterov=group["nesterov"],
                                 svd_eps=group.get("svd_eps", 1e-8),
+                                power_backend=group.get("power_backend", "poly"),
+                                power_poly_degree=group.get("power_poly_degree", 5),
+                                power_poly_eps=group.get("power_poly_eps", 1e-3),
+                                power_poly_points=group.get("power_poly_points", 512),
+                                power_poly_round=group.get("power_poly_round", 1e-3),
                             )
                         else:
                             update = muon_update(
@@ -316,9 +413,16 @@ class SingleDeviceMuonWithAuxAdam(torch.optim.Optimizer):
                 group["use_power"] = group.get("use_power", False)
                 group["power_p"] = group.get("power_p", 0.0)
                 group["svd_eps"] = group.get("svd_eps", 1e-8)
+                group["power_backend"] = group.get("power_backend", "poly")
+                group["power_poly_degree"] = group.get("power_poly_degree", 5)
+                group["power_poly_eps"] = group.get("power_poly_eps", 1e-3)
+                group["power_poly_points"] = group.get("power_poly_points", 512)
+                group["power_poly_round"] = group.get("power_poly_round", 1e-3)
                 allowed = {
                     "params", "lr", "momentum", "weight_decay", "use_muon",
-                    "nesterov", "ns_steps", "use_power", "power_p", "svd_eps"
+                    "nesterov", "ns_steps", "use_power", "power_p", "svd_eps",
+                    "power_backend", "power_poly_degree", "power_poly_eps",
+                    "power_poly_points", "power_poly_round",
                 }
                 assert set(group.keys()).issubset(allowed)
             else:
@@ -356,6 +460,11 @@ class SingleDeviceMuonWithAuxAdam(torch.optim.Optimizer):
                             beta=group["momentum"],
                             nesterov=group["nesterov"],
                             svd_eps=group.get("svd_eps", 1e-8),
+                            power_backend=group.get("power_backend", "poly"),
+                            power_poly_degree=group.get("power_poly_degree", 5),
+                            power_poly_eps=group.get("power_poly_eps", 1e-3),
+                            power_poly_points=group.get("power_poly_points", 512),
+                            power_poly_round=group.get("power_poly_round", 1e-3),
                         )
                     else:
                         update = muon_update(
