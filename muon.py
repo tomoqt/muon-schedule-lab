@@ -41,6 +41,22 @@ def muon_update(grad, momentum, beta=0.95, ns_steps=5, nesterov=True):
     return update
 
 
+def power_svd_update(grad, momentum, p=0.0, beta=0.95, nesterov=True, svd_eps=1e-8):
+    """Scheduled singular-value-power update transform."""
+    momentum.lerp_(grad, 1 - beta)
+    update = grad.lerp_(momentum, beta) if nesterov else momentum
+    if update.ndim == 4:
+        update = update.view(len(update), -1)
+    if update.ndim != 2:
+        return update
+
+    U, S, Vh = torch.linalg.svd(update.float(), full_matrices=False)
+    if p < 0:
+        S = S.clamp_min(svd_eps)
+    S_new = S ** p
+    return ((U * S_new.unsqueeze(0)) @ Vh).to(update.dtype)
+
+
 class Muon(torch.optim.Optimizer):
     """
     Muon - MomentUm Orthogonalized by Newton-schulz
@@ -88,8 +104,23 @@ class Muon(torch.optim.Optimizer):
                     state = self.state[p]
                     if len(state) == 0:
                         state["momentum_buffer"] = torch.zeros_like(p)
-                    update = muon_update(p.grad, state["momentum_buffer"], beta=group["momentum"],
-                                         nesterov=group["nesterov"], ns_steps=group["ns_steps"])
+                    if group.get("use_power", False):
+                        update = power_svd_update(
+                            p.grad,
+                            state["momentum_buffer"],
+                            p=group.get("power_p", 0.0),
+                            beta=group["momentum"],
+                            nesterov=group["nesterov"],
+                            svd_eps=group.get("svd_eps", 1e-8),
+                        )
+                    else:
+                        update = muon_update(
+                            p.grad,
+                            state["momentum_buffer"],
+                            beta=group["momentum"],
+                            nesterov=group["nesterov"],
+                            ns_steps=group["ns_steps"],
+                        )
                     p.mul_(1 - group["lr"] * group["weight_decay"])
                     p.add_(update.reshape(p.shape), alpha=-group["lr"])
                 dist.all_gather(params_pad[base_i:base_i + dist.get_world_size()], params_pad[base_i + dist.get_rank()])
@@ -121,8 +152,23 @@ class SingleDeviceMuon(torch.optim.Optimizer):
                 state = self.state[p]
                 if len(state) == 0:
                     state["momentum_buffer"] = torch.zeros_like(p)
-                update = muon_update(p.grad, state["momentum_buffer"], beta=group["momentum"],
-                                     nesterov=group["nesterov"], ns_steps=group["ns_steps"])
+                if group.get("use_power", False):
+                    update = power_svd_update(
+                        p.grad,
+                        state["momentum_buffer"],
+                        p=group.get("power_p", 0.0),
+                        beta=group["momentum"],
+                        nesterov=group["nesterov"],
+                        svd_eps=group.get("svd_eps", 1e-8),
+                    )
+                else:
+                    update = muon_update(
+                        p.grad,
+                        state["momentum_buffer"],
+                        beta=group["momentum"],
+                        nesterov=group["nesterov"],
+                        ns_steps=group["ns_steps"],
+                    )
                 p.mul_(1 - group["lr"] * group["weight_decay"])
                 p.add_(update.reshape(p.shape), alpha=-group["lr"])
 
@@ -175,14 +221,22 @@ class MuonWithAuxAdam(torch.optim.Optimizer):
                 group["weight_decay"] = group.get("weight_decay", 0)
                 group["nesterov"] = group.get("nesterov", True)
                 group["ns_steps"] = group.get("ns_steps", 5)
-                assert set(group.keys()) == set(["params", "lr", "momentum", "weight_decay", "use_muon", "nesterov", "ns_steps"])
+                group["use_power"] = group.get("use_power", False)
+                group["power_p"] = group.get("power_p", 0.0)
+                group["svd_eps"] = group.get("svd_eps", 1e-8)
+                allowed = {
+                    "params", "lr", "momentum", "weight_decay", "use_muon",
+                    "nesterov", "ns_steps", "use_power", "power_p", "svd_eps"
+                }
+                assert set(group.keys()).issubset(allowed)
             else:
                 # defaults
                 group["lr"] = group.get("lr", 3e-4)
                 group["betas"] = group.get("betas", (0.9, 0.95))
                 group["eps"] = group.get("eps", 1e-10)
                 group["weight_decay"] = group.get("weight_decay", 0)
-                assert set(group.keys()) == set(["params", "lr", "betas", "eps", "weight_decay", "use_muon"])
+                allowed = {"params", "lr", "betas", "eps", "weight_decay", "use_muon"}
+                assert set(group.keys()).issubset(allowed)
         super().__init__(param_groups, dict())
 
     @torch.no_grad()
@@ -206,8 +260,23 @@ class MuonWithAuxAdam(torch.optim.Optimizer):
                         state = self.state[p]
                         if len(state) == 0:
                             state["momentum_buffer"] = torch.zeros_like(p)
-                        update = muon_update(p.grad, state["momentum_buffer"], beta=group["momentum"],
-                                             nesterov=group["nesterov"], ns_steps=group["ns_steps"])
+                        if group.get("use_power", False):
+                            update = power_svd_update(
+                                p.grad,
+                                state["momentum_buffer"],
+                                p=group.get("power_p", 0.0),
+                                beta=group["momentum"],
+                                nesterov=group["nesterov"],
+                                svd_eps=group.get("svd_eps", 1e-8),
+                            )
+                        else:
+                            update = muon_update(
+                                p.grad,
+                                state["momentum_buffer"],
+                                beta=group["momentum"],
+                                nesterov=group["nesterov"],
+                                ns_steps=group["ns_steps"],
+                            )
                         p.mul_(1 - group["lr"] * group["weight_decay"])
                         p.add_(update.reshape(p.shape), alpha=-group["lr"])
                     dist.all_gather(params_pad[base_i:base_i + dist.get_world_size()], params_pad[base_i + dist.get_rank()])
@@ -244,14 +313,22 @@ class SingleDeviceMuonWithAuxAdam(torch.optim.Optimizer):
                 group["weight_decay"] = group.get("weight_decay", 0)
                 group["nesterov"] = group.get("nesterov", True)
                 group["ns_steps"] = group.get("ns_steps", 5)
-                assert set(group.keys()) == set(["params", "lr", "momentum", "weight_decay", "use_muon", "nesterov", "ns_steps"])
+                group["use_power"] = group.get("use_power", False)
+                group["power_p"] = group.get("power_p", 0.0)
+                group["svd_eps"] = group.get("svd_eps", 1e-8)
+                allowed = {
+                    "params", "lr", "momentum", "weight_decay", "use_muon",
+                    "nesterov", "ns_steps", "use_power", "power_p", "svd_eps"
+                }
+                assert set(group.keys()).issubset(allowed)
             else:
                 # defaults
                 group["lr"] = group.get("lr", 3e-4)
                 group["betas"] = group.get("betas", (0.9, 0.95))
                 group["eps"] = group.get("eps", 1e-10)
                 group["weight_decay"] = group.get("weight_decay", 0)
-                assert set(group.keys()) == set(["params", "lr", "betas", "eps", "weight_decay", "use_muon"])
+                allowed = {"params", "lr", "betas", "eps", "weight_decay", "use_muon"}
+                assert set(group.keys()).issubset(allowed)
         super().__init__(param_groups, dict())
 
     @torch.no_grad()
@@ -271,8 +348,23 @@ class SingleDeviceMuonWithAuxAdam(torch.optim.Optimizer):
                     state = self.state[p]
                     if len(state) == 0:
                         state["momentum_buffer"] = torch.zeros_like(p)
-                    update = muon_update(p.grad, state["momentum_buffer"], beta=group["momentum"],
-                                         nesterov=group["nesterov"], ns_steps=group["ns_steps"])
+                    if group.get("use_power", False):
+                        update = power_svd_update(
+                            p.grad,
+                            state["momentum_buffer"],
+                            p=group.get("power_p", 0.0),
+                            beta=group["momentum"],
+                            nesterov=group["nesterov"],
+                            svd_eps=group.get("svd_eps", 1e-8),
+                        )
+                    else:
+                        update = muon_update(
+                            p.grad,
+                            state["momentum_buffer"],
+                            beta=group["momentum"],
+                            nesterov=group["nesterov"],
+                            ns_steps=group["ns_steps"],
+                        )
                     p.mul_(1 - group["lr"] * group["weight_decay"])
                     p.add_(update.reshape(p.shape), alpha=-group["lr"])
             else:

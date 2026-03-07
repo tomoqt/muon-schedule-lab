@@ -1,77 +1,120 @@
-# LLM with Muon Playground
+# Muon Schedule Lab
 
-This project is a hackable, minimal implementation of a GPT-style LLM for experimentation, based on [nanoGPT](https://github.com/karpathy/nanoGPT) by Andrej Karpathy. The main focus of this playground is to explore and experiment with the [Muon](https://github.com/KellerJordan/Muon) optimizer.
+A clean experimental repo combining:
 
-## Motivation for Muon
+- [`Muongpt`](https://github.com/tomoqt/Muongpt) as the GPT training base
+- scheduled singular-value power transforms from the `scheduled-muon` experiments
 
-Recent optimizers like [Muon](https://github.com/KellerJordan/Muon) achieve remarkable efficiency by orthogonalizing weights in neural networks. This orthogonalization creates more spread singular value decompositions (SVDs), which appears to improve network training dynamics.
+The core idea is to control update geometry with a singular-value exponent `p`.
+Lower `p` is treated as more exploratory behavior. Higher `p` is treated as more exploitative behavior.
 
-The success of these approaches suggests that standard Euclidean optimization methods might not be optimal for training large neural networks.
+## Math in one place
+Let a matrix update be `G = U S V^T`.
 
+- Standard SGD keeps `p=1`: `G = U S^1 V^T`.
+- Muon-like zeroth-power behavior corresponds to `p=0`: `U S^0 V^T`.
+- General family: `G_p = U S^p V^T`.
 
-## Project Goal
+Equivalent alpha form:
 
-This project aims to provide a simple and flexible playground for training LLMs. It's designed to be easily modified for experiments with different architectures, optimizers, and training techniques. The inclusion of the Muon optimizer serves as a starting point for exploring non-standard optimization methods.
+`G_alpha = G (G^T G)^(-alpha) = U S^(1-2alpha) V^T`, so `p = 1 - 2alpha`.
 
-## Implementation
+## What is implemented
+Muon parameter groups can now run either:
 
-We use the minimal and efficient nanoGPT implementation as our foundation. The code is designed to be as lightweight and readable as possible while enabling meaningful experiments in representation geometry.
+- Newton-Schulz Muon update (original behavior), or
+- SVD-power update with scheduled exponent `p`.
 
-## Dataset Preparation
+Supported schedules:
 
-For experimenting with mixed curvature transformers, we use the same dataset preparation approach as the original nanoGPT:
+- `anneal`: linear annealing from `p_start` to `p_end`
+- `anneal_cosine`: cosine annealing from `p_start` to `p_end`
+- `fixed_alternating`: alternate between `p_low` and `p_high` every `power_alternation_period` steps
+- `entropy_alternating`: switch between `p_low` and `p_high` using SVD-entropy hysteresis thresholds
 
-### Shakespeare Dataset (Small Scale Testing)
+Entropy-alternating uses gradient-matrix SVD entropy in `[0,1]`:
 
-For quick experimentation, the Shakespeare dataset provides a lightweight option:
+- switch to `p_high` when entropy rises above `power_entropy_high`
+- switch to `p_low` when entropy falls below `power_entropy_low`
 
-```sh
+## Key files
+- `train.py`: training loop and schedule integration
+- `muon.py`: optimizer internals with optional power-SVD update
+- `power_schedule.py`: schedule classes + entropy utilities
+- `scripts/schedule_smoke.py`: small local smoke test on random data
+
+## Install
+```bash
+pip install -r requirements.txt
+```
+
+## Local smoke test (small)
+This verifies all three schedule classes and optimizer integration without dataset prep:
+
+```bash
+python scripts/schedule_smoke.py
+```
+
+## Dataset prep (for real training)
+Example small dataset:
+
+```bash
 python data/shakespeare_char/prepare.py
 ```
 
-This creates `train.bin` and `val.bin` files with character-level tokenization.
+## Run training with schedules
+Single-process example with Muon + annealing schedule:
 
-### OpenWebText Dataset (Full Scale Training)
-
-Fineweb
-```sh
-python data/fineweb/prepare.py
+```bash
+python train.py \
+  --dataset=shakespeare_char \
+  --use_muon=True \
+  --enable_power_schedules=True \
+  --power_schedule_type=anneal \
+  --power_p_start=1.0 \
+  --power_p_end=0.0 \
+  --max_iters=200 \
+  --batch_size=16 \
+  --block_size=128 \
+  --compile=False
 ```
 
-This downloads and tokenizes the Fineweb10B dataset, creating `train.bin` and `val.bin` files with GPT-2 BPE tokenization.
+Fixed alternating example:
 
-## Getting Started
-
-To get started with training:
-
-### Standard Training (AdamW)
-You can run a standard training with the AdamW optimizer on a single GPU:
-```sh
-python train.py --batch_size=32 --compile=False
+```bash
+python train.py \
+  --dataset=shakespeare_char \
+  --use_muon=True \
+  --enable_power_schedules=True \
+  --power_schedule_type=fixed_alternating \
+  --power_p_low=0.0 \
+  --power_p_high=1.0 \
+  --power_alternation_period=50 \
+  --max_iters=200 \
+  --batch_size=16 \
+  --block_size=128 \
+  --compile=False
 ```
 
-### Training with Muon
-The Muon optimizer implementation requires a distributed process group, so you need to use `torchrun` to launch the training script, even on a single GPU.
-To run with Muon on a single GPU:
-```sh
-torchrun --standalone --nproc_per_node=1 train.py --use_muon=True
+Entropy alternating example:
+
+```bash
+python train.py \
+  --dataset=shakespeare_char \
+  --use_muon=True \
+  --enable_power_schedules=True \
+  --power_schedule_type=entropy_alternating \
+  --power_p_low=0.0 \
+  --power_p_high=1.0 \
+  --power_entropy_low=0.45 \
+  --power_entropy_high=0.65 \
+  --max_iters=200 \
+  --batch_size=16 \
+  --block_size=128 \
+  --compile=False
 ```
 
-### Multi-GPU Training
-For multi-GPU training (with either AdamW or Muon), you can use `torchrun` as well. For example, on a machine with 4 GPUs:
-```sh
-torchrun --standalone --nproc_per_node=4 train.py
-```
-To use Muon in a multi-GPU setup, simply add the flag:
-```sh
-torchrun --standalone --nproc_per_node=4 train.py --use_muon=True
-```
-Refer to the top of `train.py` for more advanced distributed training configurations.
-
-## Acknowledgements
-
-- Original code based on [nanoGPT](https://github.com/karpathy/nanoGPT) by Andrej Karpathy
-- Geometric optimization insights from [Muon](https://github.com/KellerJordan/Muon) by Keller Jordan et al.
-
-
-
+## Notes
+- SVD-based updates are significantly heavier than Newton-Schulz Muon.
+- Entropy-based switching is intentionally simple and intended as an experimental baseline.
+- This repo is meant to make schedule ablations easy to run and compare.

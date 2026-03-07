@@ -33,6 +33,7 @@ import torch.nn as nn
 # -----------------------------------------------------------------------------
 import torch.distributed as dist
 from muon import MuonWithAuxAdam, SingleDeviceMuonWithAuxAdam
+from power_schedule import build_power_schedule, mean_grad_svd_entropy
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) on OpenWebText
 # I/O
@@ -71,6 +72,20 @@ muon_lr = 0.02 # learning rate for Muon
 muon_momentum = 0.95 # momentum for Muon
 muon_nesterov = True # whether to use nesterov momentum in Muon
 muon_ns_steps = 5 # number of Newton-Schulz iteration steps
+# scheduled power-update controls (for Muon param groups)
+enable_power_schedules = False
+power_schedule_type = 'anneal' # constant | anneal | anneal_cosine | fixed_alternating | entropy_alternating
+power_p_start = 1.0
+power_p_end = 0.0
+power_p_low = 0.0
+power_p_high = 1.0
+power_alternation_period = 200
+power_entropy_low = 0.45
+power_entropy_high = 0.65
+power_entropy_initial_mode = 'low' # low | high
+power_entropy_max_matrices = 8
+power_svd_eps = 1e-8
+power_log_interval = 100
 # learning rate decay settings
 decay_lr = True # whether to decay the learning rate
 warmup_iters = 2000 # how many steps to warm up for
@@ -220,6 +235,7 @@ model.to(device)
 scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
 
 # optimizer
+matrix_params = []
 if not use_muon:
     # Use standard AdamW for all parameters
     optimizer = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
@@ -247,7 +263,10 @@ else:
             'momentum': muon_momentum,
             'nesterov': muon_nesterov,
             'ns_steps': muon_ns_steps,
-            'weight_decay': weight_decay
+            'weight_decay': weight_decay,
+            'use_power': enable_power_schedules,
+            'power_p': power_p_start,
+            'svd_eps': power_svd_eps,
         },
         {
             'params': non_matrix_params,
@@ -263,6 +282,30 @@ else:
         optimizer = MuonWithAuxAdam(optim_groups)
     else:
         optimizer = SingleDeviceMuonWithAuxAdam(optim_groups)
+
+if enable_power_schedules and not use_muon and master_process:
+    print("Warning: enable_power_schedules=True has no effect when use_muon=False")
+
+power_schedule = None
+if use_muon and enable_power_schedules:
+    power_schedule = build_power_schedule(
+        power_schedule_type,
+        total_steps=max_iters,
+        p_start=power_p_start,
+        p_end=power_p_end,
+        p_low=power_p_low,
+        p_high=power_p_high,
+        alternation_period=power_alternation_period,
+        entropy_low=power_entropy_low,
+        entropy_high=power_entropy_high,
+        entropy_initial_mode=power_entropy_initial_mode,
+    )
+    if master_process:
+        print(
+            "Power schedules enabled: "
+            f"type={power_schedule_type}, p_start={power_p_start}, p_end={power_p_end}, "
+            f"p_low={power_p_low}, p_high={power_p_high}"
+        )
 
 if init_from == 'resume':
     optimizer.load_state_dict(checkpoint['optimizer'])
@@ -320,6 +363,8 @@ t0 = time.time()
 local_iter_num = 0 # number of iterations in the lifetime of this process
 raw_model = model.module if ddp else model # unwrap DDP container if needed
 running_mfu = -1.0
+last_power_p = None
+last_power_entropy = None
 while True:
 
     # determine and set the learning rate for this iteration
@@ -344,8 +389,11 @@ while True:
                 "lr": lr,
                 "mfu": running_mfu*100, # convert to percentage
             }
-            
-            
+            if last_power_p is not None:
+                log_dict["schedule/p"] = last_power_p
+            if last_power_entropy is not None:
+                log_dict["schedule/entropy"] = last_power_entropy
+
             wandb.log(log_dict)
         if losses['val'] < best_val_loss or always_save_checkpoint:
             best_val_loss = losses['val']
@@ -383,6 +431,20 @@ while True:
     if grad_clip != 0.0:
         scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+
+    # optional scheduled power transform on Muon parameter groups
+    if use_muon and enable_power_schedules and power_schedule is not None:
+        entropy_value = None
+        if power_schedule_type == 'entropy_alternating':
+            entropy_value = mean_grad_svd_entropy(matrix_params, max_matrices=power_entropy_max_matrices)
+        current_p = power_schedule.value(iter_num, entropy_value)
+        for param_group in optimizer.param_groups:
+            if param_group.get('use_muon', False):
+                param_group['use_power'] = True
+                param_group['power_p'] = current_p
+                param_group['svd_eps'] = power_svd_eps
+        last_power_p = current_p
+        last_power_entropy = entropy_value
     # step the optimizer and scaler if training in fp16
     scaler.step(optimizer)
     scaler.update()
@@ -400,7 +462,12 @@ while True:
         if local_iter_num >= 5: # let the training loop settle a bit
             mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
             running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
-        print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
+        msg = f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%"
+        if last_power_p is not None and iter_num % power_log_interval == 0:
+            msg += f", p {last_power_p:.4f}"
+            if last_power_entropy is not None:
+                msg += f", svd_entropy {last_power_entropy:.4f}"
+        print(msg)
     iter_num += 1
     local_iter_num += 1
 
