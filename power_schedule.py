@@ -170,7 +170,13 @@ def normalized_svd_entropy(matrix: torch.Tensor, eps: float = 1e-12) -> float:
     if matrix.ndim != 2:
         raise ValueError("normalized_svd_entropy expects a 2D matrix")
 
-    s = torch.linalg.svdvals(matrix.float())
+    try:
+        s = torch.linalg.svdvals(matrix.float())
+    except (RuntimeError, NotImplementedError):
+        # MPS can fail on some SVD paths; fall back to CPU and move back.
+        if matrix.device.type != "mps":
+            raise
+        s = torch.linalg.svdvals(matrix.float().cpu()).to(matrix.device)
     if s.numel() == 0:
         return 0.0
     probs = s.clamp_min(eps)

@@ -216,6 +216,105 @@ Poly backend is faster than exact for scheduled runs, but currently loses valida
 relative to exact by roughly `+0.06` to `+0.08` val loss on average across the tested methods.
 Across the full set of char experiments, none of the scheduled variants beat baseline Muon on final validation.
 
+### Other char experiments (full audit)
+An audit of local `wandb` logs found `104` `shakespeare_char` runs:
+`9` short bring-up runs (`16-24` steps), `3` runs at `300` steps,
+`4` runs at `500` steps, and `88` runs configured for `2000` steps.
+One of the `2000`-step runs stopped early at step `900`.
+
+#### Bring-up runs (`16-24` steps, exact backend)
+These were integration sanity checks, not performance runs.
+
+| run | final iter | val | train |
+|---|---:|---:|---:|
+| baseline_muon_small | 20 | **4.1738** | 4.1731 |
+| entropy_alt_p0_p1_small | 20 | 4.1753 | 4.1745 |
+| fixed_alt_p0_p1_small | 20 | 4.1793 | 4.1784 |
+| fixed_alt_p0_p1_period8_small_v2 | 24 | 4.1807 | 4.1794 |
+| anneal_p0_to_p1_small | 20 | 4.1817 | 4.1807 |
+| fixed_alt_p0_p1_period4_small_v2 | 24 | 4.1833 | 4.1818 |
+| entropy_alt_p0_p1_tight_thresholds_small_v2 | 24 | 4.1841 | 4.1826 |
+| fixed_alt_p0_p1_period1_small | 16 | 4.1878 | 4.1838 |
+| fixed_alt_p0_p1_period4_small | 16 | 4.1883 | 4.1843 |
+
+#### Intermediate runs (`300/500` steps, exact backend)
+At this horizon the alternating schedules were clearly behind baseline.
+
+| run | final iter | val | train |
+|---|---:|---:|---:|
+| fixed_alt_period60_long300 | 300 | **3.3605** | 3.3490 |
+| fixed_alt_period20_long300 | 300 | 3.3614 | 3.3499 |
+| entropy_alt_long300 | 300 | 3.3864 | 3.3791 |
+| baseline_muon_long500 | 500 | **2.3503** | 2.3042 |
+| entropy_alt_long500 | 500 | 2.9257 | 2.9019 |
+| fixed_alt_period20_long500 | 500 | 2.9352 | 2.9063 |
+| fixed_alt_period60_long500 | 500 | 2.9372 | 2.9116 |
+
+#### Direct alternating schedules at `2000` steps (exact backend)
+These are the explicit fixed/entropy alternating runs outside the law/hysteresis sweeps:
+
+| run | final iter | val | train |
+|---|---:|---:|---:|
+| long2000_baseline_muon | 2000 | **1.9162** | 1.7794 |
+| long2000_alpha05_p0_constant | 2000 | 1.9861 | 1.8665 |
+| long2000_fixed_alt_p01_period60 | 2000 | 2.0582 | 1.9734 |
+| long2000_fixed_alt_p01_period20 | 2000 | 2.0858 | 2.0111 |
+| long2000_entropy_alt_p01 | 2000 | 2.2687 | 2.2431 |
+
+#### Partial run
+`long2000_entropy_law_wide_linear_c1_ph0p12_e0p55_0p75` was configured for `2000` steps
+but stopped at step `900` with `val=2.2048`. It is excluded from final comparisons.
+
+## Findings on fineweb (small local)
+These runs use `config/train_fineweb_small.py` with
+`max_iters=1000`, `batch_size=4`, `block_size=256`,
+`n_layer=4`, `n_head=4`, `n_embd=256`, `device=mps`, `dtype=float32`, `seed in {1337,1338,1339}`.
+All FineWeb runs below use `power_backend=poly` (default) with quintic polynomial settings.
+
+### Run inventory and validity
+From local `wandb` logs there are `54` FineWeb runs:
+
+| group | count | status | note |
+|---|---:|---|---|
+| pilot baseline | 1 | completed | `fineweb_pilot_baseline_muon_small` (`200` steps) |
+| entropy fallback check | 1 | completed | `fineweb_entropy_fix_check` (`120` steps) |
+| initial sweep (`fineweb_small_lr_sweep_poly_*`) | 4 | mixed | law runs were pre-fix and one run was interrupted at step `900` |
+| corrected sweep (`fineweb_small_lr_sweep_poly_v2_*`) | 48 | completed | `4` methods x `4` LR scales x `3` seeds |
+
+In the pre-fix law runs, logs show `p 0.0000` throughout and no entropy field, so those
+results are not treated as valid schedule behavior.
+
+### FineWeb LR sweep (`v2`, seed 1337 snapshot)
+LR scales are `{0.5, 1.0, 1.5, 2.0}` over base
+`learning_rate=1e-4`, `muon_lr=1e-2`, `min_lr=1e-5`.
+
+| method | LRx0.5 | LRx1.0 | LRx1.5 | LRx2.0 | best |
+|---|---:|---:|---:|---:|---:|
+| baseline_muon | 7.0563 | 6.8828 | 6.8119 | 6.7832 | **6.7832 @2.0** |
+| fixed_alpha05 | 7.0762 | 6.8734 | 6.8072 | 6.7878 | **6.7878 @2.0** |
+| law_powerg2 | 7.0768 | 6.8704 | 6.8010 | 6.7776 | **6.7776 @2.0** |
+| law_powerg2_osc | 7.0790 | 6.8700 | 6.8011 | 6.7776 | **6.7776 @2.0** |
+
+![FineWeb poly v2 LR sweep](assets/fineweb_small_lr_sweep_poly_v2_val_vs_lr.png)
+
+### FineWeb LR sweep (`v2`, mean ± std over 3 seeds)
+| method | LRx0.5 | LRx1.0 | LRx1.5 | LRx2.0 | best mean |
+|---|---:|---:|---:|---:|---:|
+| baseline_muon | 7.0757 ± 0.0908 | 6.8963 ± 0.0967 | 6.8208 ± 0.1002 | 6.7858 ± 0.0960 | **6.7858 @2.0** |
+| fixed_alpha05 | 7.0915 ± 0.0877 | 6.8838 ± 0.0994 | 6.8174 ± 0.0991 | 6.7941 ± 0.0959 | **6.7941 @2.0** |
+| law_powerg2 | 7.0925 ± 0.0878 | 6.8841 ± 0.0965 | 6.8119 ± 0.1002 | 6.7805 ± 0.1004 | **6.7805 @2.0** |
+| law_powerg2_osc | 7.0940 ± 0.0877 | 6.8804 ± 0.0967 | 6.8084 ± 0.1036 | 6.7781 ± 0.0980 | **6.7781 @2.0** |
+
+![FineWeb poly v2 mean std](assets/fineweb_small_lr_sweep_poly_v2_meanstd_val_vs_lr.png)
+
+### Practical read (FineWeb, updated)
+At `LRx0.5`, baseline Muon remains best.
+At `LRx1.0` to `LRx2.0`, entropy-law variants remain slightly better on mean validation
+(`~0.008` to `0.016` better than baseline, depending on LR), but seed-to-seed spread is
+much larger (`~0.09` to `0.10` std), so this is still weak evidence.
+Across runs, schedules stay near low `p` most of the time, so behavior remains close to
+the fixed-`p=0` regime.
+
 ## Notes
 - Power schedule runs default to polynomial updates unless you set `power_backend=exact`.
 - Entropy-based switching is intentionally simple and intended as an experimental baseline.
