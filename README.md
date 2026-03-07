@@ -35,7 +35,7 @@ Supported schedules:
 - `anneal`: linear annealing from `p_start` to `p_end`
 - `anneal_cosine`: cosine annealing from `p_start` to `p_end`
 - `fixed_alternating`: alternate between `p_low` and `p_high` every `power_alternation_period` steps
-- `entropy_alternating`: switch between `p_low` and `p_high` using SVD-entropy hysteresis thresholds
+- `entropy_alternating`: switch between `p_low` and `p_high` using two entropy thresholds
 
 Entropy-alternating uses gradient-matrix SVD entropy in `[0,1]`:
 
@@ -148,37 +148,50 @@ Unless noted otherwise, all values are from 2000-step runs with
 The reference baseline run is:
 - `long2000_baseline_muon`: `val=1.9162`, `train=1.7794`
 
-### Fixed-alpha sweeps
-Coarse sweep over `alpha in {-0.5, 0, 0.25, 0.5, 0.75, 1.0}`:
+### Fixed alpha runs (single constant `p`)
+What we changed: we kept one fixed `alpha` for the whole run, so `p=1-2alpha` is constant.
+This is the cleanest check of whether a single power beats baseline Muon.
+
+Coarse run set over `alpha in {-0.5, 0, 0.25, 0.5, 0.75, 1.0}`:
 - Best was `alpha=0.5` (`p=0`), `val=1.9861`
 - Moving far from `alpha=0.5` quickly degrades quality
 
-Refinement below `0.5` (`alpha in {0.49, 0.48, 0.45, 0.40, 0.35, 0.30}`):
+Refined run set below `0.5` (`alpha in {0.49, 0.48, 0.45, 0.40, 0.35, 0.30}`):
 - Best was `alpha=0.49` (`p=0.02`), `val=2.0036`
 - This stayed worse than the `alpha=0.5` run (`1.9861`)
 
 ![Fixed alpha refine](assets/alpha_refine_below_05.png)
 
-### Entropy hysteresis sweeps
-Initial hysteresis sweeps showed wide `p_high` ranges were unstable and high-loss.
-Follow-up runs with tighter amplitude found:
+### Entropy threshold-switch runs
+What we changed: instead of one fixed `p`, we switched between `p_low` and `p_high`
+based on entropy crossing two thresholds (classic hysteresis). This lets `p` move only
+when entropy clearly moves up or down.
+
+Initial runs with wide `p_high` were unstable and high-loss.
+Follow-up runs with smaller `p_high` found:
 - Best: `p_low=0.0`, `p_high=0.04`, thresholds `0.695/0.715`, `val=2.0063`
 - Increasing `p_high` above `0.04` worsened validation in this setting
 
 ![Entropy hyst config](assets/entropy_hyst_config_sweep.png)
 ![Entropy hyst followup](assets/entropy_hyst_followup_p_high_sweep.png)
 
-### Entropy-law sweeps
-Across linear / power / sigmoid laws with `p in [0, 0.12]`, best run was:
+### Entropy-law runs (`p` set by a formula)
+What we changed: instead of hard switching, we computed `p` from current entropy with
+linear, power, or sigmoid mappings.
+
+Across linear / power / sigmoid mappings with `p in [0, 0.12]`, best run was:
 - `power` law with `gamma=2`: `val=1.9990`
 
-Coarser wide-range sweeps confirmed:
+Wider-range runs confirmed:
 - Very large `p_high` values (for example `0.5`) and some inverse mappings hurt quality
 
 ![Entropy law sweep](assets/entropy_law_sweep.png)
 ![Entropy law coarse](assets/entropy_law_coarse_wide_sweep.png)
 
 ### Repeatability check (3 seeds)
+What we changed: we reran the best few scheduled variants with seeds `{1337,1338,1339}`
+to test if ranking was stable.
+
 Mean and std over seeds `{1337,1338,1339}`:
 
 | method | mean val | std |
@@ -191,6 +204,8 @@ Mean and std over seeds `{1337,1338,1339}`:
 ![Repeat seeds](assets/repeat_seed_oscillation_comparison.png)
 
 ### Exact backend (`power_backend=exact`)
+What we changed: scheduled methods used exact SVD for the power update.
+
 | method | LRx0.5 | LRx1.0 | LRx1.5 | LRx2.0 | best |
 |---|---:|---:|---:|---:|---:|
 | baseline_muon | 1.9348 | **1.9162** | 1.9432 | 1.9630 | **1.9162 @1.0** |
@@ -201,6 +216,8 @@ Mean and std over seeds `{1337,1338,1339}`:
 ![Exact LR sweep](assets/lr_sweep_2000_val_vs_lr.png)
 
 ### Poly backend (`power_backend=poly`, default)
+What we changed: scheduled methods used the polynomial approximation instead of exact SVD.
+
 | method | LRx0.5 | LRx1.0 | LRx1.5 | LRx2.0 | best |
 |---|---:|---:|---:|---:|---:|
 | baseline_muon | 1.9348 | **1.9162** | 1.9432 | 1.9630 | **1.9162 @1.0** |
@@ -223,7 +240,8 @@ An audit of local `wandb` logs found `104` `shakespeare_char` runs:
 One of the `2000`-step runs stopped early at step `900`.
 
 #### Bring-up runs (`16-24` steps, exact backend)
-These were integration sanity checks, not performance runs.
+What we changed: very short runs to confirm schedule logic and logging were wired correctly.
+These are sanity checks, not quality benchmarks.
 
 | run | final iter | val | train |
 |---|---:|---:|---:|
@@ -238,7 +256,8 @@ These were integration sanity checks, not performance runs.
 | fixed_alt_p0_p1_period4_small | 16 | 4.1883 | 4.1843 |
 
 #### Intermediate runs (`300/500` steps, exact backend)
-At this horizon the alternating schedules were clearly behind baseline.
+What we changed: longer early-stage runs to see if alternating schedules showed quick gains.
+At this horizon, alternating schedules were clearly behind baseline.
 
 | run | final iter | val | train |
 |---|---:|---:|---:|
@@ -251,7 +270,8 @@ At this horizon the alternating schedules were clearly behind baseline.
 | fixed_alt_period60_long500 | 500 | 2.9372 | 2.9116 |
 
 #### Direct alternating schedules at `2000` steps (exact backend)
-These are the explicit fixed/entropy alternating runs outside the law/hysteresis sweeps:
+What we changed: explicit side-by-side runs with fixed `p=0` and simple alternating schedules,
+separate from the formula-based entropy-law runs.
 
 | run | final iter | val | train |
 |---|---:|---:|---:|
@@ -285,6 +305,9 @@ In the pre-fix law runs, logs show `p 0.0000` throughout and no entropy field, s
 results are not treated as valid schedule behavior.
 
 ### FineWeb LR sweep (`v2`, seed 1337 snapshot)
+What we changed: matched runs for 4 methods and 4 LR scales, then looked at final val loss
+after `1000` steps.
+
 LR scales are `{0.5, 1.0, 1.5, 2.0}` over base
 `learning_rate=1e-4`, `muon_lr=1e-2`, `min_lr=1e-5`.
 
@@ -298,6 +321,9 @@ LR scales are `{0.5, 1.0, 1.5, 2.0}` over base
 ![FineWeb poly v2 LR sweep](assets/fineweb_small_lr_sweep_poly_v2_val_vs_lr.png)
 
 ### FineWeb LR sweep (`v2`, mean ± std over 3 seeds)
+What we changed: repeated the same 16-run matrix for seeds `1338` and `1339`, then computed
+mean and standard deviation across the three seeds.
+
 | method | LRx0.5 | LRx1.0 | LRx1.5 | LRx2.0 | best mean |
 |---|---:|---:|---:|---:|---:|
 | baseline_muon | 7.0757 ± 0.0908 | 6.8963 ± 0.0967 | 6.8208 ± 0.1002 | 6.7858 ± 0.0960 | **6.7858 @2.0** |
@@ -313,7 +339,7 @@ At `LRx1.0` to `LRx2.0`, entropy-law variants remain slightly better on mean val
 (`~0.008` to `0.016` better than baseline, depending on LR), but seed-to-seed spread is
 much larger (`~0.09` to `0.10` std), so this is still weak evidence.
 Across runs, schedules stay near low `p` most of the time, so behavior remains close to
-the fixed-`p=0` regime.
+the fixed-`p=0` behavior.
 
 ## Notes
 - Power schedule runs default to polynomial updates unless you set `power_backend=exact`.
