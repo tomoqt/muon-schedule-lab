@@ -1,7 +1,24 @@
 # Scheduled Muon Graph Repro Index
 
 Repo: https://github.com/tomoqt/muon-schedule-lab
-Reference experiment-code commit: `3d39205`
+Reference experiment-code commit: `9e56161`
+
+Why this graph exists:
+Muon can be read as approximately taking a zeroth power of the gradient singular values:
+`G (G^T G)^(-1/2) ~= U S^0 V^T`.
+Ordinary SGD leaves the singular values untouched:
+`G = U S^1 V^T`.
+This project asks whether we can choose and schedule an arbitrary power
+`U S^p V^T`
+through training, so that lower `p` flattens the spectrum more aggressively while higher `p`
+preserves or sharpens dominant directions. The motivating idea is that `p` may give a usable
+exploration/exploitation control knob instead of treating Muon and the raw update as two
+disconnected endpoints.
+
+What this graph tries to answer:
+- is that SVD-power view mathematically coherent
+- can it be implemented efficiently with polynomial approximations rather than exact SVD
+- does any fixed or adaptive schedule actually beat baseline Muon or AdamW on real training runs
 
 Minimal local setup:
 ```bash
