@@ -14,6 +14,12 @@ This graph has two layers of evidence:
 1. matrix-level plots in the root and phase-1/phase-2 nodes
 2. language-model training branches on `shakespeare_char` and `fineweb`
 
+Matrix-level provenance note:
+- the earliest matrix plots came from the original `scheduledmuon.py` notebook export
+- that file is not checked into this repo anymore
+- those root matrix figures should therefore be read as archived evidence
+- the current repo does preserve the algebra, optimizer implementation, schedule code, and all training-side experiments
+
 Rebuild the repo-level summary figures:
 ```bash
 uv run --with-requirements requirements.txt python scripts/build_flywheel_artifacts.py
