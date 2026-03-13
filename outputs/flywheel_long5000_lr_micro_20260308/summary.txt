@@ -1,0 +1,7 @@
+method,scale,best_val,final_val,duration_s
+baseline_muon,1.6,6.1238,6.2067,335
+baseline_muon,2.0,6.1002,6.1785,319
+baseline_muon,2.4,6.0932,6.1731,319
+law_powerg2_osc,1.6,6.2455,6.3474,400
+law_powerg2_osc,2.0,6.2392,6.3236,398
+law_powerg2_osc,2.4,6.2311,6.3163,398

@@ -1,0 +1,7 @@
+method,scale,learning_rate,muon_lr,min_lr,out_dir,run_name,start_utc,end_utc,best_val,final_val
+baseline_muon,1.6,0.0001600000,0.0160000000,0.0000160000,out_fineweb_long5000_lr_micro_baseline_muon_s1p6_seed1337,fineweb_long5000_lr_micro_baseline_muon_s1p6_seed1337,2026-03-08T10:19:59Z,2026-03-08T10:25:34Z,6.1238,6.2067
+baseline_muon,2.0,0.0002000000,0.0200000000,0.0000200000,out_fineweb_long5000_lr_micro_baseline_muon_s2p0_seed1337,fineweb_long5000_lr_micro_baseline_muon_s2p0_seed1337,2026-03-08T10:25:34Z,2026-03-08T10:30:53Z,6.1002,6.1785
+baseline_muon,2.4,0.0002400000,0.0240000000,0.0000240000,out_fineweb_long5000_lr_micro_baseline_muon_s2p4_seed1337,fineweb_long5000_lr_micro_baseline_muon_s2p4_seed1337,2026-03-08T10:30:53Z,2026-03-08T10:36:12Z,6.0932,6.1731
+law_powerg2_osc,1.6,0.0001600000,0.0160000000,0.0000160000,out_fineweb_long5000_lr_micro_law_powerg2_osc_s1p6_seed1337,fineweb_long5000_lr_micro_law_powerg2_osc_s1p6_seed1337,2026-03-08T10:36:12Z,2026-03-08T10:42:52Z,6.2455,6.3474
+law_powerg2_osc,2.0,0.0002000000,0.0200000000,0.0000200000,out_fineweb_long5000_lr_micro_law_powerg2_osc_s2p0_seed1337,fineweb_long5000_lr_micro_law_powerg2_osc_s2p0_seed1337,2026-03-08T10:42:52Z,2026-03-08T10:49:30Z,6.2392,6.3236
+law_powerg2_osc,2.4,0.0002400000,0.0240000000,0.0000240000,out_fineweb_long5000_lr_micro_law_powerg2_osc_s2p4_seed1337,fineweb_long5000_lr_micro_law_powerg2_osc_s2p4_seed1337,2026-03-08T10:49:30Z,2026-03-08T10:56:08Z,6.2311,6.3163

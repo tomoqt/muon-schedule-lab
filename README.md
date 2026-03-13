@@ -48,6 +48,7 @@ Entropy-alternating uses gradient-matrix SVD entropy in `[0,1]`:
 - `power_schedule.py`: schedule classes + entropy utilities
 - `scripts/schedule_smoke.py`: small local smoke test on random data
 - `scripts/run_schedule_suite.py`: reproducible baseline-vs-schedule suite runner
+- `scripts/build_flywheel_artifacts.py`: regenerate branch-level plots from checkpoints and CSV summaries
 
 ## Install
 ```bash
@@ -142,11 +143,22 @@ uv run --with-requirements requirements.txt \
   --name-prefix long500
 ```
 
+## Rebuild branch plots
+To regenerate the branch-level figures that are attached to the Flywheel graph:
+
+```bash
+uv run --with-requirements requirements.txt \
+  python scripts/build_flywheel_artifacts.py
+```
+
 ## Findings on shakespeare_char
 Unless noted otherwise, all values are from 2000-step runs with
 `config/train_shakespeare_char.py`, `n_layer=2`, `n_head=2`, `n_embd=64`.
 The reference baseline run is:
 - `long2000_baseline_muon`: `val=1.9162`, `train=1.7794`
+
+Unless a table column explicitly says `best`, the reported `val` values below are the
+final validation losses recorded at the run horizon.
 
 ### Fixed alpha runs (single constant `p`)
 What we changed: we kept one fixed `alpha` for the whole run, so `p=1-2alpha` is constant.
@@ -159,6 +171,11 @@ Coarse run set over `alpha in {-0.5, 0, 0.25, 0.5, 0.75, 1.0}`:
 Refined run set below `0.5` (`alpha in {0.49, 0.48, 0.45, 0.40, 0.35, 0.30}`):
 - Best was `alpha=0.49` (`p=0.02`), `val=2.0036`
 - This stayed worse than the `alpha=0.5` run (`1.9861`)
+
+Across the full sweep, the fixed-alpha curve is shallow near `alpha=0.5` and clearly worse
+away from that region. Baseline Muon still stays below the whole fixed-alpha family.
+
+![Fixed alpha full sweep](assets/char_fixed_alpha_full.png)
 
 ![Fixed alpha refine](assets/alpha_refine_below_05.png)
 
@@ -281,6 +298,11 @@ separate from the formula-based entropy-law runs.
 | long2000_fixed_alt_p01_period20 | 2000 | 2.0858 | 2.0111 |
 | long2000_entropy_alt_p01 | 2000 | 2.2687 | 2.2431 |
 
+This remains a weak part of the thesis. The simple alternating schedules never beat baseline
+at any tested horizon, and the entropy-threshold alternating run is decisively worse.
+
+![Alternating horizons](assets/char_alternating_horizons.png)
+
 #### Partial run
 `long2000_entropy_law_wide_linear_c1_ph0p12_e0p55_0p75` was configured for `2000` steps
 but stopped at step `900` with `val=2.2048`. It is excluded from final comparisons.
@@ -332,6 +354,12 @@ mean and standard deviation across the three seeds.
 | law_powerg2_osc | 7.0940 ± 0.0877 | 6.8804 ± 0.0967 | 6.8084 ± 0.1036 | 6.7781 ± 0.0980 | **6.7781 @2.0** |
 
 ![FineWeb poly v2 mean std](assets/fineweb_small_lr_sweep_poly_v2_meanstd_val_vs_lr.png)
+![FineWeb baseline vs fixed alpha](assets/fineweb_baseline_fixed_alpha_meanstd.png)
+![FineWeb entropy law mean std](assets/fineweb_entropy_law_meanstd.png)
+
+The more adversarial read is that these margins are tiny compared with run-to-run spread.
+The entropy-law variants look slightly better than baseline at `LRx1.0` to `LRx2.0`, but the
+gap is only on the order of `1e-2`, while the seed standard deviation stays around `1e-1`.
 
 ### Practical read (FineWeb, updated)
 At `LRx0.5`, baseline Muon remains best.
@@ -341,7 +369,45 @@ much larger (`~0.09` to `0.10` std), so this is still weak evidence.
 Across runs, schedules stay near low `p` most of the time, so behavior remains close to
 the fixed-`p=0` behavior.
 
+### FineWeb gating rerun (`500` and `2000` steps at LR scale `2.0`)
+What we changed: on Flywheel-managed compute, we reran only the baseline and the current
+best scheduled candidate (`law_powerg2_osc`) at LR scale `2.0` to see whether the small
+1000-step advantage for the scheduled variant holds as horizon grows.
+
+These runs use the same FineWeb v2 recipe as above, except `device=cuda` on a single A10G.
+
+| method | 500 steps | 2000 steps |
+|---|---:|---:|
+| baseline_muon | 7.0907 | **6.5463** |
+| law_powerg2_osc | **7.0553** | 6.5893 |
+
+This is the cleanest short-vs-mid horizon split we have:
+- at `500` steps, the scheduled run is slightly better (`-0.0354`)
+- at `2000` steps, baseline Muon is better (`-0.0430`)
+
+So the early scheduled gain does not survive a longer matched run. That is directionally
+consistent with the later `5000`-step benchmark.
+
+![FineWeb gating rerun](assets/fineweb_gating_500_2000.png)
+
+### FineWeb 5000-step matched-LR benchmark
+What we changed: after the 1000-step sweep, we reran only the baseline and the best scheduled
+candidate (`law_powerg2_osc`) for `5000` steps at LR scales `{1.6, 2.0, 2.4}`.
+
+| method | LRx1.6 | LRx2.0 | LRx2.4 | best |
+|---|---:|---:|---:|---:|
+| baseline_muon | 6.1238 | 6.1002 | **6.0932** | **6.0932 @2.4** |
+| law_powerg2_osc | 6.2455 | 6.2392 | **6.2311** | **6.2311 @2.4** |
+
+This long run goes against the optimistic short-horizon read. Once the horizon is long enough,
+baseline Muon is clearly better than the scheduled variant at every tested LR scale.
+
+![FineWeb 5000-step matched LR](assets/fineweb_long5000_lr_micro_val_vs_scale.png)
+
 ## Notes
 - Power schedule runs default to polynomial updates unless you set `power_backend=exact`.
 - Entropy-based switching is intentionally simple and intended as an experimental baseline.
+- Historical checkpoints in this repo were produced before a bookkeeping fix in `train.py`, so their
+  stored `best_val_loss` field reflects the final eval at the run horizon. New runs after that fix
+  preserve the true running minimum while still saving every checkpoint.
 - This repo is meant to make schedule ablations easy to run and compare.

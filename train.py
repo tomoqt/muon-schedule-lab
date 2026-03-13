@@ -423,8 +423,10 @@ while True:
                 log_dict["schedule/entropy"] = last_power_entropy
 
             wandb.log(log_dict)
-        if losses['val'] < best_val_loss or always_save_checkpoint:
+        improved = losses['val'] < best_val_loss
+        if improved:
             best_val_loss = losses['val']
+        if improved or always_save_checkpoint:
             if iter_num > 0:
                 checkpoint = {
                     'model': raw_model.state_dict(),
